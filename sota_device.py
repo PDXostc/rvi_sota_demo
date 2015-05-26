@@ -12,7 +12,7 @@
 # Simple SOTA Client
 #
 import sys
-from rvi_json_rpc_server import RVIJSONRPCServer
+from rvilib import RVI
 import jsonrpclib
 import random
 import time
@@ -27,16 +27,18 @@ from mimetools import Message
 from StringIO import StringIO
 import json
 from subprocess import call
+from subprocess import check_output
 
-g_fd = -1
+ng_fd = -1
 g_package = ''
 g_chunk_size = 0
 g_total_size = 0
 g_chunk_index = 0
 g_retry = 0
+g_file_name = ''
 
 rvi_sota_prefix = "jlr.com/backend/sota"
-available_packagess = []
+available_packages = []
 
 class WebSocketsHandler(SocketServer.StreamRequestHandler):
     magic = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11'
@@ -104,12 +106,12 @@ class WebSocketsHandler(SocketServer.StreamRequestHandler):
     def on_message(self, message):
         global g_fd 
         global g_chunk_index
+        global g_chunk_size
         global g_total_size 
         cmd = json.loads(message)
         tid = cmd['id']
 
         if cmd['method'] == 'GetPendingUpdates':
-            print "Got message", message
             self._get_pending_updates(cmd['id'])
             return
             
@@ -134,34 +136,21 @@ class WebSocketsHandler(SocketServer.StreamRequestHandler):
             # If so, return state idle to shut down progress bar
             # in HMI.
             if g_fd == -1:
-                print "File has closed. Done"
                 self.send_message(json.dumps({'jsonrpc': '2.0',
                                               'id': tid,
                                               'result': { 'progress': 100, 
                                                           'state': 'Idle'} }))
-                finish(1)
-                return
-            
-            # CHeck that we have actual progress to report
-            if g_fd == -1:
-                print "No update in progress."
-                self.send_message(json.dumps({'jsonrpc': '2.0',
-                                              'id': tid,
-                                              'result': { 'progress': 0, 
-                                                          'state': 'Update'} }))
                 return
 
-            g_chunk_index = g_chunk_index + random.randrange(2,10)
-            print "Chunk is now", g_chunk_index
-            # Are we done faking?
-            if g_chunk_index > 100:
-                g_chunk_index = 100
-                g_fd = -1
-                
+        
+            if g_chunk_size != 0:
+                index = int(float(g_chunk_index) * (float(g_chunk_size)/ float(g_total_size)) * 100.0)
+            else:
+                index = 0
 
             self.send_message(json.dumps({'jsonrpc': '2.0',
                                           'id': tid,
-                                          'result': { 'progress': g_chunk_index, 
+                                          'result': { 'progress': index, 
                                                       'state': 'Update'} }))
             # Change 'state' to Idle when done
     
@@ -171,13 +160,11 @@ class WebSocketsHandler(SocketServer.StreamRequestHandler):
 
         
     def _cancel_download(self):
-        pkg = available_packagess.pop(0)
+        pkg = available_packages.pop(0)
         retry = pkg['retry']
 
         print "Will cancel download of package:",pkg['uuid']
-        rvi_server.message(calling_service = "/sota",
-                           service_name = rvi_sota_prefix + "/cancel_download",
-                           transaction_id = time.time(),
+        rvi_server.message(service_name = rvi_sota_prefix + "/cancel_download",
                            timeout = int(time.time())+60,
                            parameters = [{ 
                                u'retry': retry
@@ -201,35 +188,34 @@ class WebSocketsHandler(SocketServer.StreamRequestHandler):
                                       'id': tid,
                                       'result': [ ] }))
 
-        pkg = available_packagess.pop(0)
+        pkg = available_packages.pop(0)
         package = pkg['uuid']
         g_retry = pkg['retry']
         g_fd = 1
         g_chunk_index = 0
         g_package = package
-        print "Will initate download of package:",package
-#        rvi_server.message(calling_service = "/sota",
-#                           service_name = rvi_sota_prefix + "/initiate_download",
-#                           transaction_id = time.time(),
-#                           timeout = int(time.time())+60,
-#                           parameters = [{ 
-#                               u'package': package,
-#                               u'retry': g_retry,
-#                               u'destination': destination
-#                           }])
+        print "Will initate download of package: {} ({})".format(package, rvi_sota_prefix + "/initiate_download"),
+        rvi_server.message(service_name = rvi_sota_prefix + "/initiate_download",
+                           timeout = int(time.time())+60,
+                           parameters = [{ 
+                               u'package': package,
+                               u'retry': g_retry,
+                               u'destination': destination
+                           }])
 
         return
 
     def _get_pending_updates(self, tid):
-        global available_packagess
-        print "Available Packages:", available_packagess
+        global available_packages
+        print "Available Packages:", available_packages
         result = { 
             'jsonrpc': '2.0',
             'id': tid,
-            'result': available_packagess
+            'result': available_packages
         }
         self.send_message(json.dumps(result))
-        
+
+
 def usage():
     print "Usage:", sys.argv[0], "<rvi_url> <service_id>"
     print "  <rvi_url>         URL of  Service Edge on a local RVI node"
@@ -241,11 +227,12 @@ def usage():
     print "The Service Edge URL is also logged as a notice when the"
     print "RVI node is started."
     sys.exit(255)
-        
+
  
 def notify(package, retry):
     print "Available packet:", package
-    available_packagess.append({
+    global rvi_server
+    available_packages.append({
         "uuid": package,
         "retry": retry,
             "version": {
@@ -255,7 +242,6 @@ def notify(package, retry):
             }
         })
 
-
     return {u'status': 0}
 
 def start(package, chunk_size, total_size):
@@ -263,20 +249,27 @@ def start(package, chunk_size, total_size):
     global g_package
     global g_chunk_size
     global g_total_size
+    global g_file_name
+    
 
     g_package = package
     g_chunk_size = chunk_size
     g_total_size = total_size
-    file_name = "/tmp/" + package
+    g_file_name = "/tmp/" + package.replace(" ", "_") + ".wgt"
 
-    print "Starting package:", file_name
-    # g_fd = open(file_name, "w")
-    #print "open fd = ", g_fd
+    print "Starting package:", g_file_name
+    
+    try: 
+        os.remove(g_file_name)
+    except:
+        print "File {} does not exist, which is good".format(g_file_name)
+
+
+    g_fd = open(g_file_name, "w")
     return {u'status': 0}
 
 def chunk(index, msg):
     global g_fd
-    global g_package
     global g_chunk_size
     global g_chunk_index
     
@@ -295,61 +288,51 @@ def finish(dummy):
     global g_retry
     global g_package
     global g_chunk_index
+    global g_file_name
 
-    print "Package:", g_package, " is complete in /tmp"
-    # WE WILL FIX ALL THIS IN THE CROSSWALK PORT WHEN THE wrt-installer
-    # HOPEFULLY WILL NOT CRASH THE SYSTEM
-#    g_fd.close()
+    print "Package:", g_package, " is complete in ", g_file_name
+    if g_fd != -1:
+        print "Closing", g_fd
+        g_fd.close()
+
     g_fd = -1
     g_chunk_index = 0
-#    call(["wrt-installer", "-up", "/tmp/" + g_package])
-#    call(["wrt-installer", "-i", "/tmp/" + g_package])
-    if g_package.find("2.0") != -1:
-        print "Doing 2.0"
-        call(["unzip", "-d", "/opt/usr/apps/intelPoc20/res/wgt", "-q", "-o", "/root/AudioSettings2.0.wgt"])        
-    else:
-        print "Doing 1.0"
-        call(["unzip", "-d", "/opt/usr/apps/intelPoc20/res/wgt", "-q", "-o", "/root/AudioSettings1.0.wgt"])        
+    call(["/usr/bin/pkgcmd", "-i", "-t", "wgt", "-p", g_file_name, "-q"])
 
+    print "Package:", g_package, " installed"
 
-    print "Package:", g_package, " unzipped into /opt/usr/apps/intelPoc20/res/wgt"
+    # Send a completion message to the SOTA server
 
-    # Create a thread to handle incoming stuff so that we can do input
-    # in order to get new values
-
-    print "Sending download complete"
-    rvi_server.message(calling_service = "/sota",
-                       service_name = rvi_sota_prefix + "/download_complete",
-                       transaction_id = "2",
+    rvi_server.message(service_name = rvi_sota_prefix + "/download_complete",
                        timeout = int(time.time())+60,
                        parameters = [{ 
                            u'status': 0,
                            u'retry': g_retry
                        }])
+
+    # Kill any executing instances oif the package we just upgraded.
+
+
+    # Extract the package id by running a status on the file we just installed
+    # and extract the 
+    #   pkgid : JLRPOCX016
+    # line from the result
+    pkg_info = check_output(["/usr/bin/pkgcmd", "-s", "-t", "wgt", "-p", g_file_name])
+    
+    line_start = pkg_info.find("pkgid : ")
+    line_end = pkg_info.find("\n", line_start)
+    pkg_id = pkg_info[line_start+8 : line_end]
+
+    call(["/usr/bin/pkgcmd", "-k",  "-n", pkg_id, "-q"])
+    
     g_retry = 0
+    g_package = ''
+    g_file_name = ''
+    
     
     return {u'status': 0}
 
-#
-# Publish an updated HVAC value, entered at the command line of the
-# HVAC emulator, to all services who have set themselves up as
-# subscribers through the jlr.com/vin/1234/hvac/subscribe service.
-#
 
-#
-# A list of service names that should be notified when a value is
-# updated on the HVAC emulator's command line.
-#
-subscribers = []
-
-#
-# Setup a localhost URL, using a random port, that we will listen to
-# incoming JSON-RPC publish calls on, delivered by our RVI service
-# edge (specified by rvi_url).
-#
-emulator_service_host = 'localhost'
-emulator_service_port = random.randint(20001, 59999)
-emulator_service_url = 'http://'+emulator_service_host + ':' + str(emulator_service_port)
 
 # 
 # Check that we have the correct arguments
@@ -370,30 +353,20 @@ if len(sys.argv) != 2:
 # Replace 1234 with the VIN number setup in the
 # node_service_prefix entry in vehicle.config
 
-# Setup an outbound JSON-RPC connection to the RVI Service Edeg.
-rvi_server = jsonrpclib.Server(rvi_url)
+# Setup an outbound JSON-RPC connection to the RVI Service Edge.
+# Setup a connection to the local RVI node
+rvi_server = RVI(rvi_url)
+rvi_server.start_serve_thread() 
 
-emulator_service = RVIJSONRPCServer(addr=((emulator_service_host, emulator_service_port)), 
-                                    logRequests=False)
 
-
-#
-# Regsiter callbacks for incoming JSON-RPC calls delivered to
-# the HVAC emulator from the vehicle RVI node's Service Edge.
+# Register our service  and invoke 'service_invoked' if we 
+# get an incoming JSON-RPC call to it from the RVI node
 #
 
-emulator_service.register_function(notify, "/sota/notify" )
-emulator_service.register_function(start, "/sota/start" )
-# emulator_service.register_function(chunk, "/sota/chunk" )
-emulator_service.register_function(finish, "/sota/finish" )
 
-# Create a thread to handle incoming stuff so that we can do input
-# in order to get new values
-thr = threading.Thread(target=emulator_service.serve_forever)
-thr.start()
+
 
 # Setup a websocket thread
-# ws_server = SocketServer.TCPServer(("127.0.0.1", 12999), WebSocketsHandler)
 ws_server = SocketServer.TCPServer(("", 9000), WebSocketsHandler)
 ws_server.allow_reuse_address = True
 ws_thread = threading.Thread(target=ws_server.serve_forever)
@@ -404,48 +377,27 @@ ws_thread.start()
 # thread to get up to speed.
 time.sleep(0.5)
 
-#
-# Register our HVAC emulator service with the vehicle RVI node's Service Edge.
-# We register both services using our own URL as a callback.
-#
-
 # Repeat registration until we succeeed
 rvi_dead = True
+
 while rvi_dead:
     try: 
-        res = rvi_server.register_service(service = "/sota/notify",
-                                          network_address = emulator_service_url)
+        full_notify_service_name = rvi_server.register_service("/sota/notify", notify )
         rvi_dead = False
     except:
-        print "No rvi. Wait and retry"
+        print "No rvi. Wait and retry: ",  full_notify_service_name
         time.sleep(2.0)
 
-
-full_notify_service_name = res['service']
-
-
-res = rvi_server.register_service(service = "/sota/start",
-                                  network_address = emulator_service_url)
-
-full_start_service_name = res['service']
+full_start_service_name = rvi_server.register_service("/sota/start", start )
+full_chunk_service_name = rvi_server.register_service("/sota/chunk", chunk )
+full_finish_service_name = rvi_server.register_service("/sota/finish", finish )
 
 
-#res = rvi_server.register_service(service = "/sota/chunk",
-#                                  network_address = emulator_service_url)
-
-#full_chunk_service_name = res['service']
-
-res = rvi_server.register_service(service = "/sota/finish",
-                                  network_address = emulator_service_url)
-
-full_finish_service_name = res['service']
-
-print "HVAC Emulator."
+print "SOTA Client"
 print "Vehicle RVI node URL:       ", rvi_url
-print "Emulator URL:               ", emulator_service_url
 print "Full notify service name :  ", full_notify_service_name
 print "Full start service name  :  ", full_start_service_name
-#print "Full chunk service name  :  ", full_chunk_service_name
+print "Full chunk service name  :  ", full_chunk_service_name
 print "Full finish service name :  ", full_finish_service_name
 
 while True:

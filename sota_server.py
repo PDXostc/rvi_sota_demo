@@ -12,7 +12,7 @@
 # Simple SOTA Client
 #
 import sys
-from rvi_json_rpc_server import RVIJSONRPCServer
+from rvilib import RVI
 import jsonrpclib
 import random
 import time
@@ -51,9 +51,7 @@ def package_pusher():
         f_stat = os.stat(package)
     
         transaction_id += 1
-        rvi_server.message(calling_service = "/sota",
-                               service_name = destination + "/start",
-                           transaction_id = str(transaction_id),
+        rvi_server.message(service_name = destination + "/start",
                            timeout = int(time.time())+60,
                            parameters = [{ u'package': package, 
                                            u'chunk_size': chunk_size,
@@ -71,9 +69,7 @@ def package_pusher():
             print "Sending package:", package, " chunk:", index, " offset:", offset, " message size: ", len(msg)
 
             transaction_id+=1
-            rvi_server.message(calling_service = "/sota",
-                               service_name = destination + "/chunk",
-                               transaction_id = str(transaction_id),
+            rvi_server.message(service_name = destination + "/chunk",
                                timeout = int(time.time())+60,
                                parameters = [
                                    { u'index': index }, 
@@ -86,9 +82,7 @@ def package_pusher():
         time.sleep(1.0)
 
         transaction_id+=1
-        rvi_server.message(calling_service = "/sota",
-                           service_name = destination + "/finish",
-                           transaction_id = str(transaction_id),
+        rvi_server.message(service_name = destination + "/finish",
                            timeout = int(time.time())+60,
                            parameters = [ { u'dummy': 0}])
 
@@ -119,81 +113,31 @@ def download_complete(status, retry):
     return {u'status': 0}
 
 
-#
-# Setup a localhost URL, using a random port, that we will listen to
-# incoming JSON-RPC publish calls on, delivered by our RVI service
-# edge (specified by rvi_url).
-#
-emulator_service_host = 'localhost'
-emulator_service_port = random.randint(20001, 59999)
-emulator_service_url = 'http://'+emulator_service_host + ':' + str(emulator_service_port)
-
 # 
 # Check that we have the correct arguments
 #
 if len(sys.argv) != 2:
+
     usage()
 
 # Grab the URL to use
 [ progname, rvi_url ] = sys.argv    
 
-
-
 # Setup an outbound JSON-RPC connection to the RVI Service Edge.
-rvi_server = jsonrpclib.Server(rvi_url)
-
-emulator_service = RVIJSONRPCServer(addr=((emulator_service_host, emulator_service_port)), 
-                                    logRequests=False)
-
+rvi_server = RVI(rvi_url)
+rvi_server.start_serve_thread() 
 
 #
 # Regsiter callbacks for incoming JSON-RPC calls delivered to
 # the SOTA server from the vehicle RVI node's Service Edge.
 #
-initiate_download_service_name = "/sota/initiate_download"
-emulator_service.register_function(initiate_download, initiate_download_service_name )
 
-cancel_download_service_name = "/sota/cancel_download"
-emulator_service.register_function(cancel_download, cancel_download_service_name )
-
-download_complete_service_name = "/sota/download_complete"
-emulator_service.register_function(download_complete, download_complete_service_name )
+full_initiate_download_service_name = rvi_server.register_service("/sota/initiate_download", initiate_download )
+full_cancel_download_service_name = rvi_server.register_service("/sota/cancel_download", cancel_download )
+full_download_complete_service_name = rvi_server.register_service("/sota/download_complete", download_complete )
 
 
-# Create a thread to handle incoming stuff so that we can do input
-# in order to get new values
-thr = threading.Thread(target=emulator_service.serve_forever)
-thr.start()
-
-# We may see traffic immediately from the RVI node when
-# we register. Let's sleep for a bit to allow the emulator service
-# thread to get up to speed.
-time.sleep(0.5)
-
-#
-# Register our HVAC emulator service with the vehicle RVI node's Service Edge.
-# We register both services using our own URL as a callback.
-#
-res = rvi_server.register_service(service = initiate_download_service_name,
-                                  network_address = emulator_service_url)
-
-full_initiate_download_service_name = res['service']
-
-# Cancel download
-res = rvi_server.register_service(service = cancel_download_service_name,
-                                  network_address = emulator_service_url)
-
-full_cancel_download_service_name = res['service']
-
-# Download complete
-res = rvi_server.register_service(service = download_complete_service_name,
-                                  network_address = emulator_service_url)
-
-full_download_complete_service_name = res['service']
-
-print "HVAC Emulator."
 print "Vehicle RVI node URL:                 ", rvi_url
-print "Emulator URL:                         ", emulator_service_url
 print "Full initiate download service name : ", full_initiate_download_service_name
 print "Full download complete service name : ", full_download_complete_service_name
 print "Full cancel download service name   : ", full_cancel_download_service_name
@@ -210,7 +154,7 @@ while True:
     transaction_id += 1
     line = raw_input('Enter <vin> <file_name> or "q" for quit: ')
     if line == 'q':
-        emulator_service.shutdown()
+        rvi_server.shutdown()
         sys.exit(0)
 
     
@@ -229,11 +173,12 @@ while True:
         print "Could not open",file_name,":", Err
         continue
     
-    rvi_server.message(calling_service = "/sota",
-                       service_name = dst + "/notify",
-                       transaction_id = str(transaction_id),
+    rvi_server.message(service_name = dst + "/notify",
                        timeout = int(time.time())+60,
                        parameters = [{ u'package': file_name,
                                        u'retry': transaction_id }])
+
+    print "Queueing package ", file_name, " to ", dst
+    package_queue.put([file_name, dst])
 
     print('Package {} sent to {}'. format(file_name, dst))

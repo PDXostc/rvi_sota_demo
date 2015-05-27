@@ -1,10 +1,10 @@
 Summary:    Remote Vehicle Interaction - SOTA Demo packaging
 Name:       rvi_sota_demo
-Version:    0.3.0
+Version:    1.0.0
 Release:    1
 Group:      App Framework/Application Communication
 License:    Mozilla Public License 2.0
-Source:     http://content.linuxfoundation.org/auto/downloads/rvi_sota_demo/rvi_sota_demo-0.3.0.tgz
+Source:     http://content.linuxfoundation.org/auto/downloads/rvi_sota_demo/rvi_sota_demo-1.0.0.tgz
 
 BuildRequires:  make
 BuildRequires:  python
@@ -26,7 +26,7 @@ rm -fr $RPM_BUILD_ROOT/opt/rvi_sota_demo-$RPM_PACKAGE_VERSION
 mkdir -p $RPM_BUILD_ROOT/opt/rvi_sota_demo-$RPM_PACKAGE_VERSION
 
 cp -r ./mod $RPM_BUILD_ROOT/opt/rvi_sota_demo-$RPM_PACKAGE_VERSION
-cp ./rvi_json_rpc_server.py $RPM_BUILD_ROOT/opt/rvi_sota_demo-$RPM_PACKAGE_VERSION
+cp ./rvilib.py $RPM_BUILD_ROOT/opt/rvi_sota_demo-$RPM_PACKAGE_VERSION
 cp ./sota_device.py $RPM_BUILD_ROOT/opt/rvi_sota_demo-$RPM_PACKAGE_VERSION
 
 # Setup systemd
@@ -51,5 +51,5 @@ rm -rf $RPM_BUILD_ROOT
 %defattr(-,root,root)
 /usr/lib/systemd/system/sota.service 
 /etc/systemd/system/multi-user.target.wants/sota.service
-/opt/rvi_sota_demo-0.3.0
+/opt/rvi_sota_demo-1.0.0
 

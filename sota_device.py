@@ -297,7 +297,9 @@ def finish(dummy):
 
     g_fd = -1
     g_chunk_index = 0
-    call(["/usr/bin/pkgcmd", "-i", "-t", "wgt", "-p", g_file_name, "-q"])
+    # Change the smack label of the file so that our pkgcmd can access it
+    call(["/usr/bin/chsmack", "--access", "System::Shared", g_file_name])
+    call(["/usr/bin/sudo", "-u", "app", "/usr/bin/pkgcmd", "-i", "-t", "wgt", "-p", g_file_name, "-q"])
 
     print "Package:", g_package, " installed"
 
@@ -317,13 +319,13 @@ def finish(dummy):
     # and extract the 
     #   pkgid : JLRPOCX016
     # line from the result
-    pkg_info = check_output(["/usr/bin/pkgcmd", "-s", "-t", "wgt", "-p", g_file_name])
+    pkg_info = check_output(["/usr/bin/sudo", "-u", "app", "/usr/bin/pkgcmd", "-s", "-t", "wgt", "-p", g_file_name])
     
     line_start = pkg_info.find("pkgid : ")
     line_end = pkg_info.find("\n", line_start)
     pkg_id = pkg_info[line_start+8 : line_end]
 
-    call(["/usr/bin/pkgcmd", "-k",  "-n", pkg_id, "-q"])
+    call(["/usr/bin/sudo", "-u", "app", "/usr/bin/pkgcmd", "-k",  "-n", pkg_id, "-q"])
     
     g_retry = 0
     g_package = ''

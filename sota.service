@@ -4,16 +4,13 @@ Description=Software Over The Air Service
 Wants=network-online.target rvi.service
 
 [Service]
-Environment="HOME=/opt/sota_demo-0.3.0"
-Environment="PYTHONPATH=/opt/sota_demo-0.3.0/mod/lib/python"
-WorkingDirectory=/opt/sota_demo-0.3.0
+Environment="HOME=/opt/rvi_sota_demo-1.0.0"
+Environment="PYTHONPATH=/opt/rvi_sota_demo-1.0.0/mod/lib/python"
+WorkingDirectory=/opt/rvi_sota_demo-1.0.0
 Type=simple
 StandardOutput=journal
 StandardError=journal
 ExecStart=/bin/sh -c "sleep 10;/usr/bin/python sota_device.py http://localhost:8811"
-#ExecStart=/usr/bin/python sota_device.py http://localhost:8811
-#ExecStop=/bin/sh /opt/rvi-0.3.0/bin/rvi stop
-#ExecStopPost=/opt/rvi-0.3.0/erts-5.10.4/bin/epmd -kill
 GuessMainPID=yes
 
 [Install]

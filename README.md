@@ -6,54 +6,71 @@ Please note that this demo has nothing to do with the RVI SOTA *product* effort,
 
 # SETUP INSTRUCTIONS FOR SOTA DEMO ON TIZEN BOX #
 
-**Please note that there is a bug in Tizen WRT where the
-  wrt-installer regularly hangs the Tizen box when invoked to install
-  the transmitted package. This will be fixed when we move to
-  crosswalk.**
 
 ## SETUP
 
 All files are available at rvi@rvi1.nginfotpdx.net:sota_demo/
 
-Flash the tizen image TizenIVI30_APR22_AGL_19SEP2014.raw.gz
+Flash the latest stable JLR AGL Tizen image
 
 ### Install RVI 
-Once the new Tizen image has booted, install the RVI 0.3.0 rpm:
+Once the new Tizen image has booted, install the RVI 0.4.0 rpm:
 
-    rpm -i rvi-0.3.0-1.i686.rpm
+    rpm -i rvi-0.4.0-1.i686.rpm
 
 ### Install SOTA demo
 The SOTA demo is provided as an RPM file:
 
     rpm -i sota_demo-0.3.0-1.i686.rpm
 
-### Set Tizen box VIN number
-Edit the RVI config file to install a VIN number.
+### Set Tizen VIN
 
-    /opt/rvi-0.3.0/sys.config
-	
-Append the VIN number to the end of the node_service_prefix value:
+1. Reboot the Tizen box
+2. Bring up settings
+3. Bring up RVI Settings
+4. Enter a unique VIN string
+5. Reboot the Tizen box to make the changes take effect
 
-Before:
+### Backend - Setup vehicle security key
+1. Surf to ```rvi1.nginfotpdx.net:8000```
+2. Click on Administration
+3. Click on Add Key
+4. Enter the VIN + "\_key" from step 4 of Set Tizen VIN above ```sotademo_key```
+5. Enter the current date and time in the Valid From section
+6. Enter a date and time one year from now in the Valid To section
+7. Enter ```123``` as key PEM.
+8. Click save
 
-      {node_service_prefix,"jlr.com/vin/"},
+### Backend - Setup vehicle
 
-After:
-
-      {node_service_prefix,"jlr.com/vin/9UYA31581L000000"},
-
-Save the sys.config
-
-### Install the new home screen
-
-Install the updated home screen: intelPoc10.HomeScreen.wgt.20141025_1
-
-    wrt-installer -un intelPoc10.HomeScreen
-    wrt-installer -i intelPoc10.HomeScreen.wgt.20141027_1
-
-## RUNNING
-
-Reboot the Tizen box to bring up the RVI node and the SOTA demo
+1. Surf to ```rvi1.nginfotpdx.net:8000```
+2. Click on Administration
+3. Click on Add Vehicle
+4. Enter a vehicle make
+5. Enter a vehicle model
+6. Enter the vehicle VIN specified in step 4 of the Tizen setup box procedure
+7. Select account ```admin```
+8. Enter RVI domain ```jlr.com```
+9. Select the key created in the vehicle security key procedure above
+10. Click save
 
 
+## RUN THE DEMO - BACKEND
+1. Surf to ```rvi1.nginfotpdx.net:8000``` 
+2. Login using RVI-provided credentials
+3. Click on Administration
+4. Click on Add SOTA Update
+5. Select the vehicle created in the Setup vehicle procedure above
+6. Select package ```Audio Settings 1.0```
+7. Select a Valid until date one day from the current time
+8. Enter 1 as the maximum retries
+9. Click save
+10. Select the newly created update 
+11. Select action ```Start selected updates``` 
+12. Click Go
+
+## RUN THE DEMO - TIZEN
+1. Confirm the download on the popup
+2. Wait for download and install to complete
+3. Bring up audio manager to see stripped version without 3D controls
 

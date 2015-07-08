@@ -7,6 +7,19 @@
 # Mozilla Public License, version 2.0.  The full text of the 
 # Mozilla Public License is at https://www.mozilla.org/MPL/2.0/
 #
+'''
+SOTA SERVER CODE: https://gist.github.com/SevenW/47be2f9ab74cac26bf21
+The MIT License (MIT)
+
+Copyright (C) 2014, 2015 Seven Watt <info@sevenwatt.com>
+<http://www.sevenwatt.com>
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+'''
 
 #
 # Simple SOTA Client
@@ -19,15 +32,20 @@ import time
 import threading
 import os
 import base64
+
+from SimpleHTTPServer import SimpleHTTPRequestHandler
 import struct
-import SocketServer
 from base64 import b64encode
 from hashlib import sha1
 from mimetools import Message
 from StringIO import StringIO
+import errno, socket #for socket exceptions
 import json
 from subprocess import call
 from subprocess import check_output
+from SocketServer import ThreadingMixIn
+from BaseHTTPServer import HTTPServer
+import ssl
 
 ng_fd = -1
 g_package = ''
@@ -36,81 +54,236 @@ g_total_size = 0
 g_chunk_index = 0
 g_retry = 0
 g_file_name = ''
+ws_server = {}
 
 rvi_sota_prefix = "jlr.com/backend/sota"
 available_packages = []
 
-class WebSocketsHandler(SocketServer.StreamRequestHandler):
-    magic = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11'
- 
-    def setup(self):
-        SocketServer.StreamRequestHandler.setup(self)
-        print "connection established", self.client_address
-        self.handshake_done = False
- 
-    def handle(self):
-        print "Handle"
-        self.active = True
-        while self.active:
-            if not self.handshake_done:
-                self.handshake()
-            else:
-                self.read_next_message()
- 
-    def read_next_message(self):
-        msg = self.rfile.read(2)
-        if len(msg) < 2:
-            print "Connection closed"
-            self.active = False
-            return 
 
-        length = ord(msg[1]) & 127
-        if length == 126:
-            length = struct.unpack(">H", self.rfile.read(2))[0]
-        elif length == 127:
-            length = struct.unpack(">Q", self.rfile.read(8))[0]
-        masks = [ord(byte) for byte in self.rfile.read(4)]
-        decoded = ""
-        for char in self.rfile.read(length):
-            decoded += chr(ord(char) ^ masks[len(decoded) % 4])
-        self.on_message(decoded)
- 
+
+class WebSocketError(Exception):
+    pass
+
+class HTTPWebSocketsHandler(SimpleHTTPRequestHandler):
+    _ws_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11'
+    _opcode_continu = 0x0
+    _opcode_text = 0x1
+    _opcode_binary = 0x2
+    _opcode_close = 0x8
+    _opcode_ping = 0x9
+    _opcode_pong = 0xa
+
+    mutex = threading.Lock()
+    
+    def on_ws_message(self, message):
+        """Override this handler to process incoming websocket messages."""
+        pass
+        
+    def on_ws_connected(self):
+        """Override this handler."""
+        pass
+        
+    def on_ws_closed(self):
+        """Override this handler."""
+        pass
+        
     def send_message(self, message):
-        self.request.send(chr(129))
-        length = len(message)
-        if length <= 125:
-            self.request.send(chr(length))
-        elif length >= 126 and length <= 65535:
-            self.request.send(chr(126))
-            self.request.send(struct.pack(">H", length))
+        self._send_message(self._opcode_text, message)
+
+    def setup(self):
+        SimpleHTTPRequestHandler.setup(self)
+        self.connected = False
+                
+    # def finish(self):
+        # #needed when wfile is used, or when self.close_connection is not used
+        # #
+        # #catch errors in SimpleHTTPRequestHandler.finish() after socket disappeared
+        # #due to loss of network connection
+        # try:
+            # SimpleHTTPRequestHandler.finish(self)
+        # except (socket.error, TypeError) as err:
+            # self.log_message("finish(): Exception: in SimpleHTTPRequestHandler.finish(): %s" % str(err.args))
+
+    # def handle(self):
+        # #needed when wfile is used, or when self.close_connection is not used
+        # #
+        # #catch errors in SimpleHTTPRequestHandler.handle() after socket disappeared
+        # #due to loss of network connection
+        # try:
+            # SimpleHTTPRequestHandler.handle(self)
+        # except (socket.error, TypeError) as err:
+            # self.log_message("handle(): Exception: in SimpleHTTPRequestHandler.handle(): %s" % str(err.args))
+
+    def checkAuthentication(self):
+        auth = self.headers.get('Authorization')
+        if auth != "Basic %s" % self.server.auth:
+            self.send_response(401)
+            self.send_header("WWW-Authenticate", 'Basic realm="Plugwise"')
+            self.end_headers();
+            return False
+        return True
+        
+    def do_GET(self):
+        if self.server.auth and not self.checkAuthentication():
+            return
+        if self.headers.get("Upgrade", None) == "websocket":
+            self._handshake()
+            #This handler is in websocket mode now.
+            #do_GET only returns after client close or socket error.
+            self._read_messages()
         else:
-            self.request.send(chr(127))
-            self.request.send(struct.pack(">Q", length))
-        self.request.send(message)
- 
-    def handshake(self):
-        data = self.request.recv(1024).strip()
-        headers = Message(StringIO(data.split('\r\n', 1)[1]))
+            SimpleHTTPRequestHandler.do_GET(self)
+                          
+    def _read_messages(self):
+        while self.connected == True:
+            try:
+                self._read_next_message()
+            except (socket.error, WebSocketError), e:
+                #websocket content error, time-out or disconnect.
+                self.log_message("RCV: Close connection: Socket Error %s" % str(e.args))
+                self._ws_close()
+            except Exception as err:
+                #unexpected error in websocket connection.
+                self.log_error("RCV: Exception: in _read_messages: %s" % str(err.args))
+                self._ws_close()
+        
+    def _read_next_message(self):
+        #self.rfile.read(n) is blocking.
+        #it returns however immediately when the socket is closed.
+        try:
+            self.opcode = ord(self.rfile.read(1)) & 0x0F
+            length = ord(self.rfile.read(1)) & 0x7F
+            if length == 126:
+                length = struct.unpack(">H", self.rfile.read(2))[0]
+            elif length == 127:
+                length = struct.unpack(">Q", self.rfile.read(8))[0]
+            masks = [ord(byte) for byte in self.rfile.read(4)]
+            decoded = ""
+            for char in self.rfile.read(length):
+                decoded += chr(ord(char) ^ masks[len(decoded) % 4])
+            self._on_message(decoded)
+        except (struct.error, TypeError) as e:
+            #catch exceptions from ord() and struct.unpack()
+            if self.connected:
+                raise WebSocketError("Websocket read aborted while listening")
+            else:
+                #the socket was closed while waiting for input
+                self.log_error("RCV: _read_next_message aborted after closed connection")
+                pass
+        
+    def _send_message(self, opcode, message):
+        try:
+            #use of self.wfile.write gives socket exception after socket is closed. Avoid.
+            self.request.send(chr(0x80 + opcode))
+            length = len(message)
+            if length <= 125:
+                self.request.send(chr(length))
+            elif length >= 126 and length <= 65535:
+                self.request.send(chr(126))
+                self.request.send(struct.pack(">H", length))
+            else:
+                self.request.send(chr(127))
+                self.request.send(struct.pack(">Q", length))
+            if length > 0:
+                self.request.send(message)
+        except socket.error, e:
+            #websocket content error, time-out or disconnect.
+            self.log_message("SND: Close connection: Socket Error %s" % str(e.args))
+            self._ws_close()
+        except Exception as err:
+            #unexpected error in websocket connection.
+            self.log_error("SND: Exception: in _send_message: %s" % str(err.args))
+            self._ws_close()
+
+    def _handshake(self):
+        headers=self.headers
         if headers.get("Upgrade", None) != "websocket":
             return
-        print 'Handshaking...'
         key = headers['Sec-WebSocket-Key']
-        digest = b64encode(sha1(key + self.magic).hexdigest().decode('hex'))
-        response = 'HTTP/1.1 101 Switching Protocols\r\n'
-        response += 'Upgrade: websocket\r\n'
-        response += 'Connection: Upgrade\r\n'
-        response += 'Sec-WebSocket-Accept: %s\r\n\r\n' % digest
-        self.handshake_done = self.request.send(response)
+        digest = b64encode(sha1(key + self._ws_GUID).hexdigest().decode('hex'))
+        self.send_response(101, 'Switching Protocols')
+        self.send_header('Upgrade', 'websocket')
+        self.send_header('Connection', 'Upgrade')
+        self.send_header('Sec-WebSocket-Accept', str(digest))
+        self.end_headers()
+        self.connected = True
+        #self.close_connection = 0
+        self.on_ws_connected()
     
+    def _ws_close(self):
+        #avoid closing a single socket two time for send and receive.
+        self.mutex.acquire()
+        try:
+            if self.connected:
+                self.connected = False
+                #Terminate BaseHTTPRequestHandler.handle() loop:
+                self.close_connection = 1
+                #send close and ignore exceptions. An error may already have occurred.
+                try: 
+                    self._send_close()
+                except:
+                    pass
+                self.on_ws_closed()
+            else:
+                self.log_message("_ws_close websocket in closed state. Ignore.")
+                pass
+        finally:
+            self.mutex.release()
+            
+    def _on_message(self, message):
+        #self.log_message("_on_message: opcode: %02X msg: %s" % (self.opcode, message))
+        
+        # close
+        if self.opcode == self._opcode_close:
+            self.connected = False
+            #Terminate BaseHTTPRequestHandler.handle() loop:
+            self.close_connection = 1
+            try:
+                self._send_close()
+            except:
+                pass
+            self.on_ws_closed()
+        # ping
+        elif self.opcode == self._opcode_ping:
+            _send_message(self._opcode_pong, message)
+        # pong
+        elif self.opcode == self._opcode_pong:
+            pass
+        # data
+        elif (self.opcode == self._opcode_continu or 
+                self.opcode == self._opcode_text or 
+                self.opcode == self._opcode_binary):
+            self.on_ws_message(message)
 
-    def on_message(self, message):
+    def _send_close(self):
+        #Dedicated _send_close allows for catch all exception handling
+        msg = bytearray()
+        msg.append(0x80 + self._opcode_close)
+        msg.append(0x00)
+        self.request.send(msg)
+
+class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
+    """Handle requests in a separate thread."""
+
+class WSSOTAHandler(HTTPWebSocketsHandler):
+    def on_ws_connected(self):
+        self.log_message('%s','websocket connected')
+
+    def on_ws_closed(self):
+        self.log_message('%s','websocket closed')
+ 
+    def on_ws_message(self, message):
         global g_fd 
         global g_chunk_index
         global g_chunk_size
         global g_total_size 
+        if message is None:
+            message = ''
+
         cmd = json.loads(message)
         tid = cmd['id']
 
+        print "Got message", message
         if cmd['method'] == 'GetPendingUpdates':
             self._get_pending_updates(cmd['id'])
             return
@@ -335,6 +508,13 @@ def finish(dummy):
     return {u'status': 0}
 
 
+def serve_ws():
+    global ws_server
+    print "Hello"
+    while True:
+        print "Serving the socket"
+        ws_server.serve_forever()
+        
 
 # 
 # Check that we have the correct arguments
@@ -366,13 +546,15 @@ rvi_server.start_serve_thread()
 #
 
 
-
-
-# Setup a websocket thread
-ws_server = SocketServer.TCPServer(("", 9000), WebSocketsHandler)
-ws_server.allow_reuse_address = True
-ws_thread = threading.Thread(target=ws_server.serve_forever)
+server = ThreadedHTTPServer(('', 9000), WSSOTAHandler)
+server.daemon_threads = True
+server.auth = b64encode("")
+print('started http server at port 9000')
+ws_thread = threading.Thread(target=server.serve_forever)
 ws_thread.start()
+
+
+# ws_thread = threading.Thread(target=ws_server.serve_forever)
 
 # We may see traffic immediately from the RVI node when
 # we register. Let's sleep for a bit to allow the emulator service
@@ -402,5 +584,10 @@ print "Full start service name  :  ", full_start_service_name
 print "Full chunk service name  :  ", full_chunk_service_name
 print "Full finish service name :  ", full_finish_service_name
 
-while True:
-    time.sleep(3600.0)
+try:
+    while True:
+        time.sleep(3600.0)
+        
+except KeyboardInterrupt:
+    print('^C received, shutting down server')
+    server.socket.close()

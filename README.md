@@ -2,7 +2,7 @@
 
 Simple SOTA demo using RVI and our own backend server.
 
-Please note that this demo has nothing to do with the RVI SOTA *product* effort, which can be found in its own [repo](https://github.com/PDXostc/rvi_sota)
+**Please note that this demo has nothing to do with the RVI SOTA reference implementation project, which can be found in its own [server](https://github.com/PDXostc/rvi_sota_server) and [client](https://github.com/PDXostc/rvi_sota_client) repos.**
 
 # SETUP INSTRUCTIONS FOR SOTA DEMO ON TIZEN BOX #
 
